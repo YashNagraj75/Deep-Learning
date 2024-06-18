@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-import torch,math,tiktoken
+import torch,math,tiktoken,time
 import torch.nn as nn
 from torch.nn import functional as F
 
@@ -33,12 +33,13 @@ class CasualSelfAttention(nn.Module):
         v = v.view(B,T,self.n_head,C // self.n_head).transpose(1,2) 
 
         # Now plugin the attention equation: (q * kT)/(sqrt(dk)). We will next multiply the values
-        attn = (q @ k.transpose(-2,-1)) * (1.0 / math.sqrt(k.size(-1)))
-        attn = attn.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf')) 
-        attn = F.softmax(attn, dim=-1)
-        # Okay so here when masked_fill is applied we set the corresponding values of the sequence to 0 and then setting these zeros to -inf
-        # This is done in order to avoid the model to look at these weights and then decrease learning
-        y = attn @ v
+        # attn = (q @ k.transpose(-2,-1)) * (1.0 / math.sqrt(k.size(-1)))
+        # attn = attn.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf')) 
+        # attn = F.softmax(attn, dim=-1)
+        # # Okay so here when masked_fill is applied we set the corresponding values of the sequence to 0 and then setting these zeros to -inf
+        # # This is done in order to avoid the model to look at these weights and then decrease learning
+        # y = attn @ v
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         y = y.transpose(1,2).contiguous().view(B,T,C)
         y = self.c_proj(y)
         return y
@@ -94,6 +95,30 @@ class GPT(nn.Module):
             ln_f = nn.LayerNorm(config.n_embd),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+        # Weight sharing 
+        self.transformer.wte.weight = self.lm_head.weight
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            """Here we scale the residual layer weights by a factor of -0.5 following the GPT2 paper
+            Here we multiply the num_layers by 2 because we have 2 residual connections
+            1) From the MHA blocks
+            2) From the FFN blocks
+
+            We do this using a flag NANOGPT_SCALE_INIT flag
+            """
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                std *= (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            
 
 
     def forward(self, idx, targets=None):
@@ -206,27 +231,38 @@ elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
 
 print(f"Using device: {device}")
 
+torch.set_float32_matmul_precision('high')
 # model = GPT.from_pretrained('gpt2')
-model = GPT(GPT2Config)
+model = GPT(GPT2Config(vocab_size=50304))
 model.eval()
 model.to(device)
+# model = torch.compile(model)
 
 num_repeat_sequences = 5
 max_length = 30
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
 
 train_loader = DataLoaderLite(B = 4, T = 32)
 
 # Optimization
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
+    t0 = time.time()
     x, y = train_loader.next_batch()
     optimizer.zero_grad()
-    logits , loss= model(x,y)
+    with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        logits , loss= model(x,y)
+        
     loss.backward()
-    optimizer.step()    
-    print(f"step {i} loss: {loss.item()}")
+    optimizer.step()
+    torch.cuda.synchronize()
+    t1 = time.time()
+    dt = (t1 - t0 ) * 1000    
+    print(f"step {i} loss: {loss.item()}, dt {dt:.2f}ms")
 
-import sys;sys.exit()
+import sys;sys.exit() 
 
 
 
