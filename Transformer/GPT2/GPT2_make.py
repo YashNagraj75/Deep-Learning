@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-import torch,math
+import torch,math,tiktoken
 import torch.nn as nn
 from torch.nn import functional as F
 
@@ -167,6 +167,36 @@ class GPT(nn.Module):
 
         return model
 
+# ----------------------------------------------------------------------------
+class DataLoaderLite:
+    def __init__(self,B, T):
+        self.B = B
+        self.T = T
+
+        with open('input.txt','r') as f:
+            text = f.read()
+
+        tokenizer = tiktoken.get_encoding("gpt2")
+        tokens = tokenizer.encode(text)
+        self.tokens = torch.tensor(tokens)
+        print(f"Loaded {len(self.tokens)} tokens")
+        print(f"Per epoch we have {len(self.tokens) // (self.B * self.T)} batches")
+
+        # Initial position 
+        self.current_position = 0
+
+    def next_batch(self):
+        B, T = self.B, self.T
+        buf = self.tokens[self.current_position: self.current_position + B*T+1]
+        x = buf[:-1].view(B,T).to("cuda")
+        y = buf[1:].view(B,T).to('cuda')
+
+        self.current_position += B*T
+        if self.current_position + (B * T + 1) > len(self.tokens):
+            self.current_position = 0
+
+        return x ,y 
+
 
 device = "cpu"
 if torch.cuda.is_available():
@@ -181,22 +211,21 @@ model = GPT(GPT2Config)
 model.eval()
 model.to(device)
 
-import tiktoken
 num_repeat_sequences = 5
 max_length = 30
-tokenizer = tiktoken.get_encoding('gpt2')
-with open("input.txt", "r") as f:
-    text = f.read()
 
-text = text[:1000]
-tokens = tokenizer.encode(text)
-B,T = 4, 32
-buf = torch.tensor(tokens[: B * T + 1], dtype=torch.long)
-x = buf[:-1].view(B, T).to(device)
-y = buf[1:].view(B, T).to(device)
+train_loader = DataLoaderLite(B = 4, T = 32)
 
-logits , loss= model(x,y)
-print(loss)
+# Optimization
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(50):
+    x, y = train_loader.next_batch()
+    optimizer.zero_grad()
+    logits , loss= model(x,y)
+    loss.backward()
+    optimizer.step()    
+    print(f"step {i} loss: {loss.item()}")
+
 import sys;sys.exit()
 
 
