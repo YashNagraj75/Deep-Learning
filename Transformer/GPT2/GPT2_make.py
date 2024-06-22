@@ -266,25 +266,25 @@ import sys;sys.exit()
 
 
 
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)
+# torch.manual_seed(42)
+# torch.cuda.manual_seed(42)
 
-epsilon = 1e-8
-while x.size(1) < max_length:
-    with torch.no_grad():
-        logits = model(x)
-        logits = logits[:, -1, :] 
+# epsilon = 1e-8
+# while x.size(1) < max_length:
+#     with torch.no_grad():
+#         logits = model(x)
+#         logits = logits[:, -1, :] 
 
-        probs = F.softmax(logits, dim=-1)
+#         probs = F.softmax(logits, dim=-1)
 
-        topk_probs, topk_indices = torch.topk(probs, 20,dim=-1)
+#         topk_probs, topk_indices = torch.topk(probs, 20,dim=-1)
 
 
-        ix = torch.multinomial(topk_probs,1)
+#         ix = torch.multinomial(topk_probs,1)
 
-        xcol = torch.gather(topk_indices, -1, ix)
-        x = torch.cat((x, xcol), dim=1)
+#         xcol = torch.gather(topk_indices, -1, ix)
+#         x = torch.cat((x, xcol), dim=1)
 
-# Print the generated text
-for i in range(num_repeat_sequences):
-    print(">",tokenizer.decode(x[i].tolist()))
+# # Print the generated text
+# for i in range(num_repeat_sequences):
+#     print(">",tokenizer.decode(x[i].tolist()))
