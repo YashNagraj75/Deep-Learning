@@ -3,7 +3,8 @@ import torch,math,tiktoken,time,inspect,os
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.distributed import init_process_group, destroy_process_group
-
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
 class CasualSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -11,7 +12,8 @@ class CasualSelfAttention(nn.Module):
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd) 
         # This is the output projection for all heads.
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
-        self.n_head = config.n_head
+        self.n_head = config.n_headself.current_position =  self.B * self.T *  self.process_rank
+
         self.n_embd = config.n_embd
         # This is the look ahead mask but given the name of bias
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)) # This one return the lower triangle matrix given the tensor
@@ -218,9 +220,11 @@ class GPT(nn.Module):
 
 # ----------------------------------------------------------------------------
 class DataLoaderLite:
-    def __init__(self,B, T):
+    def __init__(self,B, T, process_rank, num_processes):
         self.B = B
         self.T = T
+        self.process_rank = process_rank
+        self.num_processes = num_processes
 
         with open('input.txt','r') as f:
             text = f.read()
@@ -232,7 +236,7 @@ class DataLoaderLite:
         print(f"Per epoch we have {len(self.tokens) // (self.B * self.T)} batches")
 
         # Initial position 
-        self.current_position = 0
+        self.current_position =  self.B * self.T *  self.process_rank
 
     def next_batch(self):
         B, T = self.B, self.T
@@ -240,9 +244,9 @@ class DataLoaderLite:
         x = buf[:-1].view(B,T).to("cuda")
         y = buf[1:].view(B,T).to('cuda')
 
-        self.current_position += B*T
-        if self.current_position + (B * T + 1) > len(self.tokens):
-            self.current_position = 0
+        self.current_position += B*T * self.num_processes
+        if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
+            self.current_position =  self.B * self.T *  self.process_rank
 
         return x ,y 
 
@@ -274,6 +278,11 @@ torch.set_float32_matmul_precision('high')
 model = GPT(GPT2Config(vocab_size=50304))
 model.eval()
 model.to(device)
+# model = torch.compile(model)
+if ddp:
+    DDP(model, device_ids=[ddp_local_rank])
+
+raw_model = model.module if ddp else model
 
 num_repeat_sequences = 5
 max_length = 30
@@ -291,11 +300,7 @@ if master_process:
     print(f"Total desired batch size: {total_batch_size}")
     print(f"=> Calculated gradient accumulation steps: {grad_accum_steps}")
 
-print("I am GPU: ", ddp_rank)
-print("Bye")
-
-import sys;sys.exit(0)
-train_loader = DataLoaderLite(B = 4, T = 32)
+train_loader = DataLoaderLite(B = 4, T = 32, process_rank=ddp_rank, num_processes = ddp_world_size)
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
@@ -313,7 +318,7 @@ def get_lr(it): # Here we are using the linear warmup and then cosine decay
     return min_lr + coeff * (max_lr - min_lr)
 
 # Optimization
-optimizer = model.configure_optimizer(weight_decay=0.1,learning_rate=6e-4,device=device)
+optimizer = raw_model.configure_optimizer(weight_decay=0.1,learning_rate=6e-4,device=device) # Switched from model to raw_model as model is a DDP model now
 for step in range(max_steps):
     t0 = time.time()
     optimizer.zero_grad()
@@ -323,12 +328,14 @@ for step in range(max_steps):
         with torch.autocast(device_type=device, dtype=torch.bfloat16):
             logits , loss= model(x,y)
             
+        loss = loss / grad_accum_steps
+        loss_accum += loss.detach()
+        if ddp:
+            model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
         loss.backward()
-    loss = loss / grad_accum_steps
-    loss_accum += loss.detach()
-    optimizer.step()
-    torch.cuda.synchronize()
 
+    if ddp:
+        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
     # Clipping gradients to prevent the exploding gradient problem
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
@@ -340,8 +347,13 @@ for step in range(max_steps):
 
     torch.cuda.synchronize()
     t1 = time.time()
-    dt = (t1 - t0 ) * 1000    
-    print(f"step {step:4d} |  loss: {loss_accum.item():.6f} | lr: {lr:.4e} | norm: {norm:.6f} | dt {dt:.2f}ms")
+    dt = (t1 - t0 ) * 1000   
+
+    if master_process: 
+        print(f"step {step:4d} |  loss: {loss_accum.item():.6f} | lr: {lr:.4e} | norm: {norm:.6f} | dt {dt:.2f}ms")
+
+if ddp:
+    destroy_process_group()
 
 import sys;sys.exit() 
 
