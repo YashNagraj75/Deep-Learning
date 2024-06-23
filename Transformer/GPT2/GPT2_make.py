@@ -1,7 +1,8 @@
 from dataclasses import dataclass
-import torch,math,tiktoken,time,inspect
+import torch,math,tiktoken,time,inspect,os
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.distributed import init_process_group, destroy_process_group
 
 class CasualSelfAttention(nn.Module):
     def __init__(self, config):
@@ -246,13 +247,28 @@ class DataLoaderLite:
         return x ,y 
 
 
-device = "cpu"
-if torch.cuda.is_available():
-    device = "cuda"
-elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-    device = "mps"
+ddp = int(os.environ.get('RANK', -1)) != -1
+if ddp:
+    assert torch.cuda.is_available(), "Cuda needed"
+    init_process_group(backend='nccl')
+    ddp_rank = int(os.environ['RANK'])
+    ddp_local_rank = int(os.environ['LOCAL_RANK'])
+    ddp_world_size = int(os.environ['WORLD_SIZE'])
+    device = f"cuda:{ddp_local_rank}"
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0
+else:
+    ddp_rank = 0
+    ddp_local_rank = 0
+    ddp_world_size = 1
+    master_process = True
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = "mps"
 
-print(f"Using device: {device}")
+    print(f"Using device: {device}")
 
 torch.set_float32_matmul_precision('high')
 model = GPT(GPT2Config(vocab_size=50304))
@@ -268,12 +284,17 @@ if torch.cuda.is_available():
 total_batch_size = 1024 #524288
 B = 4 # 16
 T = 32 # 1024 sequence length
-assert total_batch_size % (B * T) == 0
-grad_accum_steps = total_batch_size // (B * T)
-print(f"Total desired batch size: {total_batch_size}")
-print(f"=> Calculated gradient accumulation steps: {grad_accum_steps}")
+assert total_batch_size % (B * T * ddp_world_size) == 0
+grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
 
+if master_process:
+    print(f"Total desired batch size: {total_batch_size}")
+    print(f"=> Calculated gradient accumulation steps: {grad_accum_steps}")
 
+print("I am GPU: ", ddp_rank)
+print("Bye")
+
+import sys;sys.exit(0)
 train_loader = DataLoaderLite(B = 4, T = 32)
 
 max_lr = 6e-4
