@@ -27,11 +27,18 @@ class CasualSelfAttention(nn.Module):
         # So each head * head_size 
 
         qkv = self.c_attn(x)
+    def forward(self,x): # The forward pass
+        B,T,C  = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
+        # e.g. in GPT-2 (124M), n_head=12, hs=64, so nh*hs=C=768 channels in the Transformer
+        # So each head * head_size 
+
+        qkv = self.c_attn(x)
         q,k,v = qkv.split(self.n_embd,dim=2)
         k = k.view(B,T,self.n_head,C // self.n_head).transpose(1,2) 
         # Here the C // self.n_heads splits the Channels into n_heads Ex: 768 / 12 = 64
         # So the dim becomes (B,nh,T,nh)
-
         q = q.view(B,T,self.n_head,C // self.n_head).transpose(1,2) 
         v = v.view(B,T,self.n_head,C // self.n_head).transpose(1,2) 
 

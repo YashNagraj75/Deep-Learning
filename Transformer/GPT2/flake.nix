@@ -24,10 +24,9 @@
             python311Packages.pytorch-bin
             python311Packages.virtualenv
           ];
-
-          shellHook = ''
-              export LD_LIBRARY_PATH="${pkgs.linuxPackages.nvidia_x11}/lib"
-          '';          
+          env = {
+              LD_LIBRARY_PATH="${pkgs.linuxPackages.nvidia_x11}/lib";
+          };
         };
       };
     }
