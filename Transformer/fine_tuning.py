@@ -81,7 +81,6 @@ print(tokenized_dataset)
 # #     eval_dataset=tokenized_dataset['validation'],  # evaluation dataset
 # # )
 
-# # %% [code] {"execution":{"iopub.status.busy":"2024-06-29T11:03:02.359613Z","iopub.execute_input":"2024-06-29T11:03:02.359900Z","iopub.status.idle":"2024-06-29T11:18:52.528600Z","shell.execute_reply.started":"2024-06-29T11:03:02.359858Z","shell.execute_reply":"2024-06-29T11:18:52.526986Z"}}
 # trainer.train()
 
 # Now lets do peft 
@@ -119,8 +118,8 @@ peft_trainer = Trainer(
 
 peft_trainer.train()
 
-peft_model_path="/peft-dialogue-summary-checkpoint-local"
+peft_model_path="./peft-dialogue-summary-checkpoint-local"
 
-peft_trainer.model.save_pretrained(peft_model_path)
+peft_trainer.model.save_pretrained(peft_model_path, save_config=True)
 tokenizer.save_pretrained(peft_model_path)
 
